@@ -1,88 +1,99 @@
-import json, os
+import os
 import streamlit as st
-from dotenv import load_dotenv
-from openai import OpenAI
-
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    api_key = st.secrets.get("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key)
-MODEL = "gpt-5.4-mini"
+from orchestrator import run_pipeline
+from agents import resume_to_markdown
 
 st.set_page_config(page_title="JobScout", page_icon="🎯", layout="wide")
-st.title("🎯 JobScout: AI Job-Hunt Agent")
-st.caption("Paste a resume and a job description. The agent scores the fit, "
-           "finds gaps, and writes a tailored cover letter.")
+st.title("🎯 JobScout v2: Multi-Agent Job-Hunt Assistant")
+st.caption("A team of five AI agents analyzes the job, scores your fit, "
+           "tailors your resume, writes a cover letter, and fact-checks "
+           "everything against your original resume.")
 
-default_resume = open("resume.txt", encoding="utf-8").read() if os.path.exists("resume.txt") else ""
+with st.expander("How the agent team works"):
+    st.markdown("""
+1. **🔍 Job Analyst**: extracts must-have skills, keywords and hidden expectations
+2. **📊 Fit Scorer**: scores your fit, with evidence from your resume
+3. **📝 Resume Tailor**: rewrites your resume for this job, using only real facts
+4. **✉️ Cover Letter Writer**: drafts a tailored cover letter
+5. **✅ Fact-Checker**: flags fabrications or exaggerations and sends drafts back for revision
+""")
+
+st.info("Privacy: text you paste is sent to OpenAI for processing and is not stored by this app.")
+
+default_resume = ""
+if os.path.exists("resume.txt"):
+    default_resume = open("resume.txt", encoding="utf-8").read()
+
 col1, col2 = st.columns(2)
-resume = col1.text_area("Your resume", default_resume, height=350)
-job = col2.text_area("Job description", height=350, placeholder="Paste the job posting here")
+resume = col1.text_area("Your resume", default_resume, height=300)
+job = col2.text_area("Job description", height=300,
+                     placeholder="Paste the job posting here")
 
-result = {}
+if st.button("🚀 Run the agent team", type="primary",
+             disabled=not (resume.strip() and job.strip())):
+    with st.status("The agent team is working...", expanded=True) as status:
+        st.session_state.result = run_pipeline(resume, job, log=st.write)
+        status.update(label="Done!", state="complete", expanded=False)
 
-def read_resume():
-    return resume
+if "result" in st.session_state:
+    r = st.session_state.result
+    a, rep, review = r["analysis"], r["report"], r["review"]
 
-def read_job():
-    return job
+    st.divider()
+    st.subheader(f"{a.role} at {a.company}")
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        ["📊 Fit", "📝 Tailored resume", "✉️ Cover letter",
+         "🔍 Job analysis", "✅ Fact-check"])
 
-def save_application(company, role, fit_score, matching_skills, gaps, cover_letter):
-    result.update(company=company, role=role, fit_score=fit_score,
-                  matching_skills=matching_skills, gaps=gaps, cover_letter=cover_letter)
-    return "Saved."
-
-available = {"read_resume": read_resume, "read_job": read_job,
-             "save_application": save_application}
-
-S = {"type": "string"}
-tools = [
-    {"type": "function", "name": "read_resume", "description": "Read the candidate's resume.",
-     "parameters": {"type": "object", "properties": {}}},
-    {"type": "function", "name": "read_job", "description": "Read the job description.",
-     "parameters": {"type": "object", "properties": {}}},
-    {"type": "function", "name": "save_application",
-     "description": "Save the fit analysis and cover letter.",
-     "parameters": {"type": "object",
-        "properties": {"company": S, "role": S, "fit_score": {"type": "integer"},
-                       "matching_skills": S, "gaps": S, "cover_letter": S},
-        "required": ["company", "role", "fit_score", "matching_skills", "gaps", "cover_letter"]}},
-]
-
-INSTRUCTIONS = """You are a job-hunt assistant.
-1. Read the resume and the job description using your tools.
-2. Give a fit score from 0 to 100. Write matching skills and honest gaps
-   as markdown bullet lists (one "- " item per line).
-3. Write a tailored cover letter (under 250 words) using only real experience
-   from the resume. Never invent experience, degrees or skills.
-4. Save everything with save_application."""
-
-if st.button("🔍 Analyze", type="primary", disabled=not (resume and job)):
-    messages = [{"role": "user", "content": "Analyze this job for me."}]
-    with st.status("Agent is working...", expanded=True) as status:
-        while True:
-            response = client.responses.create(
-                model=MODEL, instructions=INSTRUCTIONS, input=messages, tools=tools)
-            messages += response.output
-            calls = [i for i in response.output if i.type == "function_call"]
-            if not calls:
-                break
-            for call in calls:
-                st.write(f"🛠️ Using tool: `{call.name}`")
-                args = json.loads(call.arguments or "{}")
-                output = available[call.name](**args)
-                messages.append({"type": "function_call_output",
-                                 "call_id": call.call_id, "output": str(output)})
-        status.update(label="Done!", state="complete")
-
-    if result:
-        st.subheader(f"{result['role']} at {result['company']}")
-        st.metric("Fit score", f"{result['fit_score']}/100")
+    with tab1:
+        st.metric("Fit score", f"{rep.fit_score}/100")
+        st.write(rep.score_reasoning)
         c1, c2 = st.columns(2)
-        c1.markdown("#### ✅ Matching skills\n" + result["matching_skills"])
-        c2.markdown("#### ⚠️ Gaps\n" + result["gaps"])
-        st.markdown("#### ✉️ Cover letter")
-        st.text_area("Edit before sending", result["cover_letter"], height=300)
-        st.download_button("Download cover letter", result["cover_letter"],
-                           file_name="cover_letter.txt")
+        with c1:
+            st.markdown("#### ✅ Matching skills")
+            for m in rep.matching_skills:
+                st.markdown(f"- **{m.skill}**  \n  _{m.evidence_from_resume}_")
+            st.markdown("#### 🔁 Transferable strengths")
+            for t in rep.transferable_strengths:
+                st.markdown(f"- {t}")
+        with c2:
+            st.markdown("#### ⚠️ Gaps")
+            icons = {"critical": "🔴", "moderate": "🟠", "minor": "🟡"}
+            for g in sorted(rep.gaps, key=lambda g: ["critical", "moderate", "minor"].index(g.severity)):
+                st.markdown(f"- {icons[g.severity]} **{g.skill}** ({g.severity})  \n  {g.how_to_address}")
+
+    with tab2:
+        md = resume_to_markdown(r["tailored"], r["name"])
+        st.download_button("⬇️ Download resume (.md)", md, file_name="tailored_resume.md")
+        with st.expander("What the Tailor changed, and why"):
+            for c in r["tailored"].changes_made:
+                st.markdown(f"- {c}")
+        st.markdown(md)
+
+    with tab3:
+        letter = r["letter"]
+        full = f"Subject: {letter.subject_line}\n\n{letter.letter}"
+        edited = st.text_area("Edit before sending", full, height=400)
+        st.download_button("⬇️ Download cover letter", edited, file_name="cover_letter.txt")
+
+    with tab4:
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("#### Must-have skills")
+            st.markdown("\n".join(f"- {s}" for s in a.must_have_skills))
+            st.markdown("#### Nice-to-have skills")
+            st.markdown("\n".join(f"- {s}" for s in a.nice_to_have_skills))
+        with c2:
+            st.markdown("#### Hidden expectations")
+            st.markdown("\n".join(f"- {s}" for s in a.hidden_expectations))
+            st.markdown("#### ATS keywords")
+            st.write(", ".join(a.ats_keywords))
+
+    with tab5:
+        if review and review.approved:
+            st.success("Approved: no fabrications, exaggerations or changed facts found.")
+        else:
+            st.warning("Some issues remain after the revision limit. Review them before sending.")
+        if review and review.issues:
+            for i in review.issues:
+                st.markdown(f"- **[{i.document} · {i.issue_type}]** {i.problem}  \n  _Fix:_ {i.fix}")

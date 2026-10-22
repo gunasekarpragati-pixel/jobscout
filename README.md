@@ -1,23 +1,38 @@
-# 🎯 JobScout: AI Job-Hunt Agent
+# 🎯 JobScout v2: Multi-Agent Job-Hunt Assistant
 
-An AI agent that reads a resume and a job description, scores the fit,
-identifies skill gaps, and writes a tailored cover letter.
+A team of five AI agents that analyzes a job, scores a candidate's fit,
+tailors their resume, writes a cover letter, and fact-checks everything
+against the original resume, so nothing is invented.
 
-## How it works
-The agent uses the OpenAI API with **tool calling**. Instead of answering
-in one shot, it runs in a loop and decides which tools to use:
+🔗 **Live demo:** https://jobscout-pragati.streamlit.app
 
-- `read_resume`: reads the candidate's resume
-- `read_job`: reads the job description
-- `save_application`: saves the fit score, skills, gaps and cover letter
+## The agent team
+| Agent | Role |
+|---|---|
+| 🔍 Job Analyst | Extracts must-have skills, ATS keywords and hidden expectations |
+| 📊 Fit Scorer | Scores fit (0-100) with evidence quoted from the resume |
+| 📝 Resume Tailor | Rewrites the resume for the job using only real facts |
+| ✉️ Cover Letter Writer | Drafts a tailored, specific cover letter |
+| ✅ Fact-Checker | Flags fabrications, exaggerations and changed facts |
 
-The instructions forbid inventing experience, so cover letters only use
-what's really in the resume.
+An **orchestrator** runs the agents in sequence and manages a
+**review-and-revise loop**: the Fact-Checker sends flagged drafts back to
+the writers, up to two rounds, until there are no blocking issues.
+
+## Key design decisions
+- **Structured outputs:** each agent returns a typed schema (Pydantic),
+  so agents pass reliable data to each other
+- **Single source of truth:** the base resume is the only allowed source
+  of facts; the fit report is guidance, not evidence
+- **Calibrated reviewer:** the Fact-Checker can only suggest using facts
+  already in the resume, which prevents it from causing fabrications
+- **Code-based checks** alongside AI review (e.g. keyword checks for
+  skills the candidate does not have)
 
 ## Tech stack
-Python · OpenAI API (tool calling) · Streamlit
+Python · OpenAI API (structured outputs, tool calling) · Pydantic · Streamlit
 
-## Run it locally
+## Run locally
 ```bash
 python3 -m venv venv
 source venv/bin/activate
@@ -25,3 +40,9 @@ pip install -r requirements.txt
 echo "OPENAI_API_KEY=your-key" > .env
 streamlit run app.py
 ```
+
+## Files
+- `agents.py`: the five agents and their instructions
+- `orchestrator.py`: runs the team and the revision loop
+- `app.py`: Streamlit web interface
+- `job_agent.py`: v1, a single tool-calling agent (terminal version)
